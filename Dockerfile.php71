@@ -1,0 +1,102 @@
+FROM registry.cn-shanghai.aliyuncs.com/itfarm/baseimage
+
+### 安装Openresty ( Nginx + Lua ) + PHP7.1
+RUN set -xe && \
+    apt-get update && apt-get install -y wget gettext && \
+    wget -qO - https://openresty.org/package/pubkey.gpg | apt-key add - && \
+    add-apt-repository -y "deb http://openresty.org/package/ubuntu $(lsb_release -sc) main" && \
+    add-apt-repository -y ppa:ondrej/php && \
+    apt-get update && apt-get install -y openresty && \
+    buildDeps='php-pear php7.1-dev g++ re2c make' && \
+    apt-get install -y \
+        php7.1-fpm \
+        php-memcache \
+        php-memcached \
+        php-redis \
+        php-amqp \
+        php-apcu \
+        php-imagick \
+        php-xhprof \
+        php7.1-bcmath \
+        php7.1-curl \
+        php7.1-dom \
+        php7.1-gd \
+        php7.1-json \
+        php7.1-mbstring \
+        php7.1-mcrypt \
+        php7.1-mysql \
+        php7.1-sqlite \
+        php7.1-soap \
+        php7.1-xmlrpc \
+        php7.1-xml \
+        php7.1-zip \
+        $buildDeps \
+    && \
+    update-alternatives --set php /usr/bin/php7.1 && \
+    ln -s /usr/sbin/php-fpm7.1 /usr/sbin/php-fpm && \
+    pecl install rar && \
+    apt-get purge -y --auto-remove $buildDeps && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+## Configuration
+ENV PATH "/usr/local/openresty/bin:$PATH"
+
+# Basic information for container 
+ENV ENVIRONMENT="production"
+
+# nginx
+COPY conf/nginx/ /usr/local/openresty/nginx/conf/
+
+# php
+# modify 'php.ini'
+ENV PHP_CUSTOM_INI='/etc/php/7.1/mods-available/custom.ini'
+RUN set -xe && \
+    { \
+        echo "date.timezone = Asia/Shanghai"; \
+        echo "log_errors = On"; \
+        echo "memory_limit = 128M"; \
+        echo "upload_max_filesize = 20M"; \
+        echo "post_max_size = 20M"; \
+        echo "session.cookie_httponly = 1"; \
+        echo "mysqlnd.collect_memory_statistics = On"; \
+        echo "extension=rar.so"; \
+    } | tee ${PHP_CUSTOM_INI} && \
+    phpenmod -v 7.1 custom
+
+# modify 'php-fpm.conf'
+# 子进程上限
+ENV PHP_MAX_CHILDREN=5 \
+    PHP_START_SERVERS=2 \
+    PHP_MIN_SPARE_SERVERS=1 \
+    PHP_MAX_SPARE_SERVERS=3 \
+    PHP_FPM_CONF='/etc/php/7.1/fpm/php-fpm.conf' \
+    PHP_FPM_WWW_CONF='/etc/php/7.1/fpm/pool.d/www.conf'
+
+RUN set -xe && \
+    sed -i 's@^pid =.*@pid = /run/php7.1-fpm.pid@' $PHP_FPM_CONF \
+    && sed -i 's@^error_log.*@error_log = /dev/stderr@' $PHP_FPM_CONF \
+    && sed -i 's@^;log_level.*@log_level = notice@' $PHP_FPM_CONF \
+    && sed -i 's@^user = www-data@user = root@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^group = www-data@group = root@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^listen =.*@listen = 9000@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^;slowlog.*@slowlog = /dev/stderr@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^;request_slowlog_timeout.*@request_slowlog_timeout = 10s@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^;request_terminate_timeout.*@request_terminate_timeout = 1000s@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^;php_admin_value[error_log].*@php_admin_value[error_log] = /dev/stderr@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^;php_admin_value[log_errors].*@php_admin_value[log_errors] = on@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^;php_admin_value[memory_limit].*@php_admin_value[memory_limit] = 32M@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^pm.max_children =.*@pm.max_children = $PHP_MAX_CHILDREN@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^pm.start_servers =.*@pm.start_servers = $PHP_START_SERVERS@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^pm.min_spare_servers =.*@pm.min_spare_servers = $PHP_MIN_SPARE_SERVERS@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^pm.max_spare_servers =.*@pm.max_spare_servers = $PHP_MAX_SPARE_SERVERS@' $PHP_FPM_WWW_CONF \
+    && sed -i 's@^;clear_env.*@clear_env = no@' $PHP_FPM_WWW_CONF
+
+RUN mkdir -p /opt/ci123/www/html
+
+COPY service/ /etc/service/
+COPY init.d /etc/my_init.d
+
+## EXPOSE PORT
+EXPOSE 80
+
+CMD ["/sbin/my_init"]
